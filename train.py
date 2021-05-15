@@ -11,7 +11,7 @@ from model import *
 from utils import *
 
 
-def train(model, epoch, optimizer, trainingData, metrics, class_weights):
+def train(model, epoch, optimizer, trainingData, metrics, class_weights, class_counts):
     model.train()
     loss_batch = 0
     batch_count = 0
@@ -25,25 +25,22 @@ def train(model, epoch, optimizer, trainingData, metrics, class_weights):
         # Get data
         batch = [tensor.cuda() for tensor in batch]
         obs_traj, pred_traj_gt, obs_traj_rel, pred_traj_gt_rel, non_linear_ped, \
-        loss_mask, V_obs, A_obs, V_tr, A_tr, C_obs = batch
+        loss_mask, V_obs, A_obs, V_tr, A_tr, obs_classes = batch
         optimizer.zero_grad()
         # Forward
         # V_obs = batch,seq,node,feat
         # V_obs_tmp = batch,feat,seq,node
-        V_obs_tmp = V_obs.permute(0, 3, 1, 2).contiguous()
-        V_pred, _ = model(V_obs_tmp, A_obs.squeeze(), C_obs)
+        V_obs_tmp = V_obs.permute(0, 3, 1, 2).contiguous() # 1 2 8 31
+        V_pred, _ = model(V_obs_tmp, A_obs.squeeze(), obs_classes)
 
-        V_pred = V_pred.permute(0, 2, 3, 1).contiguous()
+        V_pred = V_pred.permute(0, 2, 3, 1).contiguous() # 1 8 31 2
 
-        V_tr = V_tr.squeeze()
+        V_tr = V_tr.squeeze() # pred traj gt
         A_tr = A_tr.squeeze()
-        V_pred = V_pred.squeeze()
+        V_pred = V_pred.squeeze() # pred traj
 
         if batch_count % args.batch_size != 0 and cnt != turn_point:
-            l = graph_loss(V_pred, V_tr, C_obs[0], class_weights)
-            if True in torch.isnan(l):
-                print("Nan loss")
-                continue
+            l = graph_loss(V_pred, V_tr, obs_classes[0], class_weights, class_counts)
             if is_fst_loss:
                 loss = l
                 is_fst_loss = False
@@ -66,7 +63,7 @@ def train(model, epoch, optimizer, trainingData, metrics, class_weights):
     metrics['train_loss'].append(loss_batch / batch_count)
 
 
-def valid(model, epoch, checkpoint_dir, validationData, metrics, constant_metrics, class_weights):
+def valid(model, epoch, checkpoint_dir, validationData, metrics, constant_metrics, class_weights, class_counts):
     model.eval()
     loss_batch = 0
     batch_count = 0
@@ -80,11 +77,11 @@ def valid(model, epoch, checkpoint_dir, validationData, metrics, constant_metric
         # Get data
         batch = [tensor.cuda() for tensor in batch]
         obs_traj, pred_traj_gt, obs_traj_rel, pred_traj_gt_rel, non_linear_ped, \
-        loss_mask, V_obs, A_obs, V_tr, A_tr, C_obs = batch
+        loss_mask, V_obs, A_obs, V_tr, A_tr, obs_classes = batch
 
         V_obs_tmp = V_obs.permute(0, 3, 1, 2).contiguous()
 
-        V_pred, _ = model(V_obs_tmp, A_obs.squeeze(), C_obs)
+        V_pred, _ = model(V_obs_tmp, A_obs.squeeze(), obs_classes)
 
         V_pred = V_pred.permute(0, 2, 3, 1).contiguous()
 
@@ -93,10 +90,7 @@ def valid(model, epoch, checkpoint_dir, validationData, metrics, constant_metric
         V_pred = V_pred.squeeze()
 
         if batch_count % args.batch_size != 0 and cnt != turn_point:
-            l = graph_loss(V_pred, V_tr, C_obs[0], class_weights)
-            if True in torch.isnan(l):
-                print("Nan loss")
-                continue
+            l = graph_loss(V_pred, V_tr, obs_classes[0], class_weights, class_counts)
             if is_fst_loss:
                 loss = l
                 is_fst_loss = False
@@ -112,14 +106,15 @@ def valid(model, epoch, checkpoint_dir, validationData, metrics, constant_metric
 
     metrics['val_loss'].append(loss_batch / batch_count)
 
+    torch.save(model.state_dict(), os.path.join(checkpoint_dir, 'val_current.pth'))  # OK
     if abs(metrics['val_loss'][-1]) < abs(constant_metrics['min_val_loss']):
         constant_metrics['min_val_loss'] = metrics['val_loss'][-1]
         constant_metrics['min_val_epoch'] = epoch
         torch.save(model.state_dict(), os.path.join(checkpoint_dir, 'val_best.pth'))  # OK
 
 
-def graph_loss(V_pred, V_target, C_obs, class_weights):
-    return bivariate_loss(V_pred, V_target, C_obs, class_weights)
+def graph_loss(V_pred, V_target, obs_classes, class_weights, class_counts):
+    return bivariate_loss(V_pred, V_target, obs_classes, class_weights, class_counts)
 
 
 def start_training(datasetLocation, sampling_rate=15, num_epochs=250):
@@ -136,30 +131,23 @@ def start_training(datasetLocation, sampling_rate=15, num_epochs=250):
     with open(os.path.join(data_set, 'classInfo.json')) as f:
         class_info = json.load(f)
         class_weights = class_info["class_weights"]
-        # class_counts = class_info["class_counts"]
+        class_counts = class_info["class_counts"]
     dset_train = TrajectoryDataset(
         os.path.join(data_set, 'train'),
         obs_len=obs_seq_len,
         pred_len=pred_seq_len,
-        skip=1, norm_lap_matr=True, scaleData=config.scale)
+        skip=1, norm_lap_matr=True)
     loader_train = DataLoader(
         dset_train,
         batch_size=1,  # This is irrelative to the args batch size parameter
         shuffle=True,
         num_workers=0)
-    if config.scale:
-        print("Using Scaler")
-        dset_val = TrajectoryDataset(
-            os.path.join(data_set, 'val'),
-            obs_len=obs_seq_len,
-            pred_len=pred_seq_len,
-            skip=1, norm_lap_matr=True, scaleData=True, scaler=dset_train.vScaler)
-    else:
-        dset_val = TrajectoryDataset(
-            os.path.join(data_set, 'val'),
-            obs_len=obs_seq_len,
-            pred_len=pred_seq_len,
-            skip=1, norm_lap_matr=True)
+
+    dset_val = TrajectoryDataset(
+        os.path.join(data_set, 'val'),
+        obs_len=obs_seq_len,
+        pred_len=pred_seq_len,
+        skip=1, norm_lap_matr=True)
 
     loader_val = DataLoader(
         dset_val,
@@ -167,32 +155,29 @@ def start_training(datasetLocation, sampling_rate=15, num_epochs=250):
         shuffle=True,
         num_workers=0)
 
+
+    # Defining the model
+    model = social_stgcnn(n_stgcnn=args.n_stgcnn, n_txpcnn=args.n_txpcnn,   # 1,  5
+                          output_feat=args.output_size, seq_len=args.obs_seq_len,     # 5,  8
+                          kernel_size=args.kernel_size, pred_seq_len=args.pred_seq_len,   # 3,  12
+                          hot_enc_length=len(config.labels)).cuda()    # 6
+
+    # Training settings
+    optimizer = optim.Adam(model.parameters(), lr=args.lr)
+
+    if args.use_lrschd:
+        scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=args.lr_sh_rate, gamma=0.2)
+
     if not (config.labels is None):
         checkpoint_labels = ""
         for i in range(len(config.labels)):
-            if i == 0:
+            if (i == 0):
                 checkpoint_labels += config.labels[i]
             else:
                 checkpoint_labels += ("-" + config.labels[i])
         checkpoint_dir = os.path.join(checkpoint_dir, checkpoint_labels)
     if not os.path.exists(checkpoint_dir):
         os.makedirs(checkpoint_dir)
-    if (config.scale):
-        with open(os.path.join(checkpoint_dir, 'scalers.pkl'), 'wb') as output:
-            pickle.dump(dset_train.vScaler, output, pickle.HIGHEST_PROTOCOL)
-
-    # Defining the model
-    model = social_stgcnn(n_stgcnn=args.n_stgcnn, n_txpcnn=args.n_txpcnn,
-                          output_feat=args.output_size, seq_len=args.obs_seq_len,
-                          kernel_size=args.kernel_size, pred_seq_len=args.pred_seq_len,
-                          hot_enc_length=len(config.labels)).cuda()
-
-    # Training settings
-    # todo sgd vs adam
-    optimizer = optim.SGD(model.parameters(), lr=args.lr)
-
-    if args.use_lrschd:
-        scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=args.lr_sh_rate, gamma=0.2)
 
     with open(os.path.join(checkpoint_dir, 'args.pkl'), 'wb') as fp:
         pickle.dump(args, fp)
@@ -206,8 +191,8 @@ def start_training(datasetLocation, sampling_rate=15, num_epochs=250):
 
     print('Training started ...')
     for epoch in range(num_epochs):
-        train(model, epoch, optimizer, loader_train, metrics, class_weights)
-        valid(model, epoch, checkpoint_dir, loader_val, metrics, constant_metrics, class_weights)
+        train(model, epoch, optimizer, loader_train, metrics, class_weights, class_counts)
+        valid(model, epoch, checkpoint_dir, loader_val, metrics, constant_metrics, class_weights, class_counts)
         if args.use_lrschd:
             scheduler.step()
 
@@ -229,22 +214,30 @@ def start_training(datasetLocation, sampling_rate=15, num_epochs=250):
 
 if __name__ == '__main__':
     freeze_support()
-    if config.annotationType == "stanford":
-        checkpoint_dir = os.path.join("checkpoint", config.path + "-" + str(config.frameSkip))
+
+    if (config.annotationType == "stanford"):
+        print("Converting Stanford Dataset...")
+        #trainingDataCreator.createTrainingData("trainingData\\stanford", "trainingData\\stanfordProcessed",
+        #                                       samplingRate=config.samplingRate,
+        #                                       labels=config.labels)
+
+        checkpoint_dir = os.path.join("checkpoint", config.path + "-" + str(config.samplingRate))
         if not (config.labels is None):
             checkpoint_labels = ""
             for i in range(len(config.labels)):
-                if i == 0:
+                if (i == 0):
                     checkpoint_labels += config.labels[i]
                 else:
                     checkpoint_labels += ("-" + config.labels[i])
             checkpoint_dir = os.path.join(checkpoint_dir, checkpoint_labels)
+            
+
     parser = argparse.ArgumentParser()
-    # todo experiment with different number of graph convolutions
+
     # Model specific parameters
     parser.add_argument('--input_size', type=int, default=2)
     parser.add_argument('--output_size', type=int, default=5)
-    parser.add_argument('--n_stgcnn', type=int, default=1, help='Number of ST-GCNN layers')
+    parser.add_argument('--n_stgcnn', type=int, default=1, help='Number of ST-GCNN layers') 
     parser.add_argument('--n_txpcnn', type=int, default=5, help='Number of TXPCNN layers')
     parser.add_argument('--kernel_size', type=int, default=3)
 
@@ -256,8 +249,8 @@ if __name__ == '__main__':
     parser.add_argument('--batch_size', type=int, default=512,
                         help='minibatch size')
     parser.add_argument('--clip_grad', type=float, default=None,
-                        help='gadient clipping')
-    parser.add_argument('--lr', type=float, default=0.01,
+                        help='gradient clipping')
+    parser.add_argument('--lr', type=float, default=0.0001,
                         help='learning rate')
     parser.add_argument('--lr_sh_rate', type=int, default=150,
                         help='number of steps to drop the lr')
@@ -265,4 +258,4 @@ if __name__ == '__main__':
                         help='Use lr rate scheduler')
 
     args = parser.parse_args()
-    start_training(config.path, sampling_rate=config.frameSkip, num_epochs=config.epochs)
+    start_training(config.path, sampling_rate=config.samplingRate, num_epochs=config.epochs)
