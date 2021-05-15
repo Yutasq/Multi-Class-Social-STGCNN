@@ -3,7 +3,6 @@ import torch.nn as nn
 
 import config
 
-
 class ConvTemporalGraphical(nn.Module):
     # Source : https://github.com/yysijie/st-gcn/blob/master/net/st_gcn.py
     r"""The basic module for applying a graph convolution.
@@ -148,7 +147,7 @@ class social_stgcnn(nn.Module):
     def __init__(self, n_stgcnn=1, n_txpcnn=1, input_feat=2, output_feat=5,
                  seq_len=8, pred_seq_len=12, kernel_size=3, hot_enc_length=1):
         super(social_stgcnn, self).__init__()
-        if (config.class_enc):
+        if(config.class_enc):
             self.v_norm = nn.Sequential(
                 nn.Linear(in_features=seq_len, out_features=seq_len),
                 nn.PReLU(),
@@ -159,7 +158,7 @@ class social_stgcnn(nn.Module):
             )
 
             self.a_lin1 = nn.Sequential(
-                nn.Linear(in_features=2 * hot_enc_length, out_features=1),
+                nn.Linear(in_features=2 * hot_enc_length, out_features=seq_len),
                 nn.PReLU(),
             )
             self.a_lin2 = nn.Sequential(
@@ -167,6 +166,8 @@ class social_stgcnn(nn.Module):
                 nn.PReLU(),
 
             )
+            #self.a_conv1 = nn.Conv2d(in_channels=2 * hot_enc_length, out_channels=1, kernel_size=3, padding=1)
+            #self.a_conv2 = nn.Conv2d(in_channels=2 * seq_len, out_channels=seq_len, kernel_size=3, padding=1)
 
         self.n_stgcnn = n_stgcnn
         self.n_txpcnn = n_txpcnn
@@ -186,20 +187,20 @@ class social_stgcnn(nn.Module):
         for j in range(self.n_txpcnn):
             self.prelus.append(nn.PReLU())
 
-    def forward(self, v, a, hot_enc):
+    def forward(self, v, a, hot_enc): 
         # pedestrians that are within 1 pixel have same similarity as person they are next to
         # a = torch.where(a > 1, torch.ones_like(a), a)
-        if (config.class_enc):
-            # normalise inputs with layers
+        if(config.class_enc):
+            #normalise inputs with layers
             v = self.v_norm(v.permute(0, 1, 3, 2)).permute(0, 1, 3, 2)
-            a = self.a_norm(a.permute(1, 2, 0).unsqueeze(0)).squeeze().permute(2, 0, 1)
-            # combine class labels with adjacency matrix
+            a = self.a_norm(a.permute(1, 2, 0)).permute(2, 0, 1)
+            #combine class labels with adjacency matrix
             hot_enc = hot_enc.repeat(a.shape[1], 1, 1)
             hot_enc = torch.cat((hot_enc.rot90(k=-1), hot_enc), 2)
 
-            # linear
-            c = self.a_lin1(hot_enc).squeeze().repeat(a.shape[0], 1, 1)
-            a = self.a_lin2(torch.cat((a, c)).permute(1, 2, 0)).permute(2, 0, 1)
+            #linear
+            c = self.a_lin1(hot_enc).permute(2,0,1)# 8 31 31 #.squeeze().repeat(a.shape[0], 1, 1)
+            a = self.a_lin2(torch.cat((a, c)).permute(1, 2, 0)).permute(2, 0, 1) # 8 31 31
 
         for k in range(self.n_stgcnn):
             v, a = self.st_gcns[k](v, a)
@@ -215,3 +216,4 @@ class social_stgcnn(nn.Module):
         v = v.permute(0, 2, 1, 3)
 
         return v, a
+
