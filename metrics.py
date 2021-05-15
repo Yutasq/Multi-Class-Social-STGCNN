@@ -37,7 +37,7 @@ def fde(predAll, targetAll, count_):
         for i in range(N):
             for t in range(T - 1, T):
                 sum_ += math.sqrt((pred[i, t, 0] - target[i, t, 0]) ** 2 + (pred[i, t, 1] - target[i, t, 1]) ** 2)
-        sum_all += sum_ / N
+        sum_all += sum_ / (N)
 
     return sum_all / All
 
@@ -72,9 +72,10 @@ def closer_to_zero(current, new_v):
         return False
 
 
-def bivariate_loss(V_pred, V_trgt, C_obs, class_weights):
+def bivariate_loss(V_pred, V_trgt, obs_classes, class_weights, class_counts):
     # mux, muy, sx, sy, corr
     # assert V_pred.shape == V_trgt.shape
+
     normx = V_trgt[:, :, 0] - V_pred[:, :, 0]
     normy = V_trgt[:, :, 1] - V_pred[:, :, 1]
 
@@ -100,10 +101,9 @@ def bivariate_loss(V_pred, V_trgt, C_obs, class_weights):
 
     result = -torch.log(torch.clamp(result, min=epsilon))
     result = torch.mean(result)
-    if (not config.class_weighting):
-        return result
+
     counts = [0] * len(config.labels)
-    for enc in C_obs:
+    for enc in obs_classes:
         counts[utils.get_index_of_one_hot(enc.tolist())] += 1
     weight_sum = 0
     for i in range(len(counts)):
