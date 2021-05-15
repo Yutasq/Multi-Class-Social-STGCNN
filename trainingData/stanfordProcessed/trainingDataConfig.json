@@ -1,0 +1,1 @@
+{"samplingRate": 10, "labels": ["Biker", "Pedestrian", "Car", "Bus", "Skater", "Cart"], "inputFolder": "trainingData\\stanford", "outputFolder": "trainingData\\stanfordProcessed", "fractionToRemove": 10, "annotationType": "stanford", "complete": true}
